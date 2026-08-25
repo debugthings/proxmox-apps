@@ -281,11 +281,25 @@ wait_for_network() {
   exit 1
 }
 
+# Debian templates ship without curl; install scripts are fetched over HTTPS.
+bootstrap_ct_base() {
+  local ctid="$1"
+  msg_info "Bootstrapping apt packages in CT $ctid (curl, ca-certificates) ..."
+  pct exec "$ctid" -- bash -c '
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y --no-install-recommends ca-certificates curl
+  '
+  msg_ok "Base packages ready"
+}
+
 run_install_in_ct() {
   local ctid="$1"
   local install_name="$2"
   local url="${REPO_RAW}/install/${install_name}-install.sh"
 
+  bootstrap_ct_base "$ctid"
   msg_info "Running install script in CT $ctid ..."
   pct exec "$ctid" -- bash -c "curl -fsSL '$url' | bash"
   msg_ok "Install finished"

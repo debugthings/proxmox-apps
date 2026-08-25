@@ -9,5 +9,11 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v curl >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y --no-install-recommends ca-certificates curl
+fi
+
 echo "==> Installing WiFi Control from ${INSTALL_URL}"
 curl -fsSL "$INSTALL_URL" | bash

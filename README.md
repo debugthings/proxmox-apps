@@ -67,7 +67,8 @@ NONINTERACTIVE=1 CTID=150 IP=192.168.1.60/24,gw=192.168.1.1 bash -c "$(curl -fsS
 1. Downloads a Debian 12 template if needed
 2. Creates and starts an unprivileged LXC
 3. Waits for network
-4. Runs the matching `install/*-install.sh` inside the container
+4. Bootstraps `ca-certificates` + `curl` inside the CT (templates omit curl)
+5. Runs the matching `install/*-install.sh` inside the container
 
 App install scripts pull from the canonical GitHub repos (`debugthings/timer-app`, `debugthings/wifi-control`, `debugthings/stvraincalendarapi`).
 
