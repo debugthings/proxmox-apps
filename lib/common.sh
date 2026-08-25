@@ -8,11 +8,13 @@ REPO_RAW="${DEBUGTHINGS_SCRIPTS_URL:-https://raw.githubusercontent.com/debugthin
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 msg_info()  { echo -e "${YELLOW}→${NC} $*"; }
 msg_ok()    { echo -e "${GREEN}✓${NC} $*"; }
 msg_error() { echo -e "${RED}✗${NC} $*" >&2; }
+msg_ask()   { echo -ne "${CYAN}?${NC} $*"; }
 
 require_proxmox_host() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -33,6 +35,144 @@ next_free_ctid() {
   echo "$id"
 }
 
+ctid_in_use() {
+  pct status "$1" >/dev/null 2>&1
+}
+
+list_storages() {
+  pvesm status 2>/dev/null | awk 'NR>1 {print $1}' | tr '\n' ' '
+}
+
+ask_value() {
+  # ask_value VAR "Prompt" "default"
+  local var="$1" prompt="$2" default="${3:-}"
+  local reply
+  if [[ -n "$default" ]]; then
+    msg_ask "${prompt} [${default}]: "
+  else
+    msg_ask "${prompt}: "
+  fi
+  read -r reply || true
+  if [[ -z "$reply" ]]; then
+    reply="$default"
+  fi
+  printf -v "$var" '%s' "$reply"
+}
+
+ask_yes_no() {
+  # ask_yes_no VAR "Prompt" "Y"|"N"
+  local var="$1" prompt="$2" default="${3:-Y}"
+  local reply hint
+  if [[ "${default^^}" == "Y" ]]; then hint="Y/n"; else hint="y/N"; fi
+  msg_ask "${prompt} [${hint}]: "
+  read -r reply || true
+  reply="${reply:-$default}"
+  case "${reply,,}" in
+    y|yes) printf -v "$var" '1' ;;
+    *)     printf -v "$var" '0' ;;
+  esac
+}
+
+print_settings_summary() {
+  echo
+  echo "----------------------------------------"
+  echo "  Container settings"
+  echo "----------------------------------------"
+  echo "  CTID:              ${CTID}"
+  echo "  Hostname:          ${HOSTNAME}"
+  echo "  Storage:           ${STORAGE}"
+  echo "  Template storage:  ${TEMPLATE_STORAGE}"
+  echo "  Bridge:            ${BRIDGE}"
+  echo "  IP:                ${IP}"
+  echo "  Memory / Swap:     ${MEMORY} MB / ${SWAP} MB"
+  echo "  Cores / Disk:      ${CORES} / ${DISK} GB"
+  echo "  Unprivileged:      ${UNPRIVILEGED}"
+  echo "  Start on boot:     ${ONBOOT}"
+  echo "----------------------------------------"
+  echo
+}
+
+# Interactive Default / Advanced settings (community-scripts style).
+# Skip with NONINTERACTIVE=1 or when stdin is not a TTY (use env defaults).
+gather_settings() {
+  local suggested
+  suggested="$(next_free_ctid)"
+
+  CTID="${CTID:-$suggested}"
+  HOSTNAME="${HOSTNAME:-app}"
+  STORAGE="${STORAGE:-local-lvm}"
+  TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
+  BRIDGE="${BRIDGE:-vmbr0}"
+  IP="${IP:-dhcp}"
+  MEMORY="${MEMORY:-512}"
+  SWAP="${SWAP:-128}"
+  CORES="${CORES:-1}"
+  DISK="${DISK:-4}"
+  UNPRIVILEGED="${UNPRIVILEGED:-1}"
+  ONBOOT="${ONBOOT:-1}"
+
+  if [[ "${NONINTERACTIVE:-0}" == "1" ]]; then
+    msg_info "NONINTERACTIVE=1 — using defaults (CTID=${CTID})"
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    msg_info "No TTY — using defaults (CTID=${CTID}). Pass env vars or run interactively."
+    return 0
+  fi
+
+  local mode confirm
+  echo "Install mode:"
+  echo "  1) Default   — next free CTID (${suggested}), DHCP, app defaults"
+  echo "  2) Advanced  — choose CTID, storage, network, resources"
+  echo
+  ask_value mode "Select" "1"
+
+  case "$mode" in
+    2|a|A|advanced|Advanced)
+      echo
+      msg_info "Available storages: $(list_storages)"
+      echo
+      while true; do
+        ask_value CTID "Container ID" "$suggested"
+        if [[ ! "$CTID" =~ ^[0-9]+$ ]]; then
+          msg_error "CTID must be numeric."
+          continue
+        fi
+        if ctid_in_use "$CTID"; then
+          msg_error "CT ${CTID} already exists."
+          suggested="$(next_free_ctid)"
+          continue
+        fi
+        break
+      done
+      ask_value HOSTNAME "Hostname" "$HOSTNAME"
+      ask_value STORAGE "Rootfs storage" "$STORAGE"
+      ask_value TEMPLATE_STORAGE "Template storage" "$TEMPLATE_STORAGE"
+      ask_value BRIDGE "Bridge" "$BRIDGE"
+      echo "  IP examples: dhcp   or   192.168.1.50/24,gw=192.168.1.1"
+      ask_value IP "IP config" "$IP"
+      ask_value MEMORY "Memory (MB)" "$MEMORY"
+      ask_value SWAP "Swap (MB)" "$SWAP"
+      ask_value CORES "CPU cores" "$CORES"
+      ask_value DISK "Disk (GB)" "$DISK"
+      ask_value UNPRIVILEGED "Unprivileged (1/0)" "$UNPRIVILEGED"
+      ask_value ONBOOT "Start on boot (1/0)" "$ONBOOT"
+      ;;
+    *)
+      CTID="$suggested"
+      # Keep app-provided HOSTNAME/MEMORY/DISK/CORES; network defaults
+      ;;
+  esac
+
+  print_settings_summary
+  ask_yes_no confirm "Create container with these settings?" "Y"
+  if [[ "$confirm" != "1" ]]; then
+    msg_error "Aborted."
+    exit 1
+  fi
+}
+
 ensure_debian_template() {
   local storage="${TEMPLATE_STORAGE:-local}"
   if [[ -z "${TEMPLATE:-}" ]]; then
@@ -51,32 +191,29 @@ ensure_debian_template() {
 }
 
 create_debian_ct() {
-  local ctid="${CTID:-$(next_free_ctid)}"
-  CTID="$ctid"
-
-  if pct status "$ctid" >/dev/null 2>&1; then
-    msg_error "CT $ctid already exists. Set CTID= to a free ID."
+  if pct status "$CTID" >/dev/null 2>&1; then
+    msg_error "CT $CTID already exists. Pick another ID."
     exit 1
   fi
 
   ensure_debian_template
 
-  local storage="${STORAGE:-local-lvm}"
-  local template_storage="${TEMPLATE_STORAGE:-local}"
-  local bridge="${BRIDGE:-vmbr0}"
-  local ip="${IP:-dhcp}"
-  local memory="${MEMORY:-512}"
-  local swap="${SWAP:-128}"
-  local cores="${CORES:-1}"
-  local disk="${DISK:-4}"
-  local hostname="${HOSTNAME:-app}"
-  local unprivileged="${UNPRIVILEGED:-1}"
-  local onboot="${ONBOOT:-1}"
+  local storage="${STORAGE}"
+  local template_storage="${TEMPLATE_STORAGE}"
+  local bridge="${BRIDGE}"
+  local ip="${IP}"
+  local memory="${MEMORY}"
+  local swap="${SWAP}"
+  local cores="${CORES}"
+  local disk="${DISK}"
+  local hostname="${HOSTNAME}"
+  local unprivileged="${UNPRIVILEGED}"
+  local onboot="${ONBOOT}"
   local ssh_key="${SSH_PUBKEY:-${HOME}/.ssh/authorized_keys}"
 
   local net="name=eth0,bridge=${bridge},ip=${ip}"
   local -a args=(
-    "$ctid"
+    "$CTID"
     "${template_storage}:vztmpl/${TEMPLATE}"
     --hostname "$hostname"
     --memory "$memory"
@@ -98,10 +235,10 @@ create_debian_ct() {
     args+=(--ssh-public-keys "$ssh_key")
   fi
 
-  msg_info "Creating CT $ctid ($hostname) ..."
+  msg_info "Creating CT $CTID ($hostname) ..."
   pct create "${args[@]}"
-  pct start "$ctid"
-  msg_ok "CT $ctid started"
+  pct start "$CTID"
+  msg_ok "CT $CTID started"
 }
 
 wait_for_network() {
@@ -139,7 +276,7 @@ print_ct_summary() {
   msg_ok "${label} deployed in CT ${ctid}"
   echo "========================================"
   echo "  pct enter ${ctid}"
-  if [[ "${IP:-dhcp}" == "dhcp" ]]; then
+  if [[ "${IP}" == "dhcp" ]]; then
     echo -n "  IP: "
     pct exec "$ctid" -- hostname -I 2>/dev/null | awk '{print $1}' || echo "(dhcp)"
   else
@@ -155,6 +292,7 @@ deploy_app() {
   local label="$3"
 
   require_proxmox_host
+  gather_settings
   create_debian_ct
   wait_for_network "$CTID"
   run_install_in_ct "$CTID" "$install_name"

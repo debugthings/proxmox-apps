@@ -25,13 +25,26 @@ Install multiple apps interactively:
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/debugthings/proxmox-apps/main/install-all.sh)"
 ```
 
+## Interactive installer
+
+Each `ct/*.sh` script prompts on a TTY (community-scripts style):
+
+1. **Default** — next free CTID (starting search at 100), DHCP, app resource defaults; confirms before create
+2. **Advanced** — choose CTID, hostname, storage, bridge, IP, memory, disk, cores
+
+Silent / scripted installs:
+
+```bash
+NONINTERACTIVE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/debugthings/proxmox-apps/main/ct/wifi-control.sh)"
+```
+
 ## Configuration (environment variables)
 
-All `ct/*.sh` scripts accept overrides on the Proxmox host:
+Env vars set defaults shown in the interactive prompts (or the full config when `NONINTERACTIVE=1`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `CTID` | next free ID | Container ID |
+| `CTID` | next free ID (≥100) | Container ID |
 | `HOSTNAME` | app name | LXC hostname |
 | `STORAGE` | `local-lvm` | Rootfs storage |
 | `TEMPLATE_STORAGE` | `local` | Template storage |
@@ -41,11 +54,12 @@ All `ct/*.sh` scripts accept overrides on the Proxmox host:
 | `CORES` | per app | CPU cores |
 | `DISK` | per app | Disk GB |
 | `SSH_PUBKEY` | `~/.ssh/authorized_keys` | Root SSH key in CT |
+| `NONINTERACTIVE` | `0` | `1` = skip prompts |
 
-Example — static IP:
+Example — static IP, non-interactive:
 
 ```bash
-CTID=150 IP=192.168.1.60/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/debugthings/proxmox-apps/main/ct/timer-app.sh)"
+NONINTERACTIVE=1 CTID=150 IP=192.168.1.60/24,gw=192.168.1.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/debugthings/proxmox-apps/main/ct/timer-app.sh)"
 ```
 
 ## What each script does
