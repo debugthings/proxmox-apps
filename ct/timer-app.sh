@@ -3,10 +3,10 @@
 set -euo pipefail
 
 REPO_RAW="${DEBUGTHINGS_SCRIPTS_URL:-https://raw.githubusercontent.com/debugthings/proxmox-apps/main}"
-source <(curl -fsSL "${REPO_RAW}/lib/common.sh")
+source <(curl -fsSL "${REPO_RAW}/lib/common.sh?$(date +%s)")
 
 APP="Timer App"
-HOSTNAME="${HOSTNAME:-timer-app}"
+CT_HOSTNAME="${CT_HOSTNAME:-timer-app}"
 MEMORY="${MEMORY:-1024}"
 DISK="${DISK:-8}"
 CORES="${CORES:-1}"

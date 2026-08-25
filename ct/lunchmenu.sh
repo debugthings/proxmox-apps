@@ -3,10 +3,10 @@
 set -euo pipefail
 
 REPO_RAW="${DEBUGTHINGS_SCRIPTS_URL:-https://raw.githubusercontent.com/debugthings/proxmox-apps/main}"
-source <(curl -fsSL "${REPO_RAW}/lib/common.sh")
+source <(curl -fsSL "${REPO_RAW}/lib/common.sh?$(date +%s)")
 
 APP="St. Vrain Lunch Menu"
-HOSTNAME="${HOSTNAME:-lunchmenu}"
+CT_HOSTNAME="${CT_HOSTNAME:-lunchmenu}"
 MEMORY="${MEMORY:-768}"
 DISK="${DISK:-6}"
 CORES="${CORES:-1}"

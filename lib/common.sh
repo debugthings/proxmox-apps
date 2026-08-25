@@ -27,16 +27,36 @@ require_proxmox_host() {
   fi
 }
 
+# True if CTID/VMID is taken by an LXC or QEMU guest (any node).
+id_in_use() {
+  local id="$1"
+  [[ -f "/etc/pve/lxc/${id}.conf" ]] && return 0
+  [[ -f "/etc/pve/qemu-server/${id}.conf" ]] && return 0
+  if [[ -d /etc/pve/nodes ]]; then
+    local node_dir
+    for node_dir in /etc/pve/nodes/*/; do
+      [[ -f "${node_dir}lxc/${id}.conf" ]] && return 0
+      [[ -f "${node_dir}qemu-server/${id}.conf" ]] && return 0
+    done
+  fi
+  if command -v pvesh >/dev/null 2>&1; then
+    if pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
+      | grep -qE "\"vmid\"[[:space:]]*:[[:space:]]*${id}([,}[:space:]]|$)"; then
+      return 0
+    fi
+  fi
+  pct status "$id" >/dev/null 2>&1 && return 0
+  command -v qm >/dev/null 2>&1 && qm status "$id" >/dev/null 2>&1 && return 0
+  return 1
+}
+
 next_free_ctid() {
-  local id=100
-  while pct status "$id" >/dev/null 2>&1; do
+  local id
+  id="$(pvesh get /cluster/nextid 2>/dev/null || echo 100)"
+  while id_in_use "$id"; do
     id=$((id + 1))
   done
   echo "$id"
-}
-
-ctid_in_use() {
-  pct status "$1" >/dev/null 2>&1
 }
 
 list_storages() {
@@ -44,7 +64,6 @@ list_storages() {
 }
 
 ask_value() {
-  # ask_value VAR "Prompt" "default"
   local var="$1" prompt="$2" default="${3:-}"
   local reply
   if [[ -n "$default" ]]; then
@@ -60,7 +79,6 @@ ask_value() {
 }
 
 ask_yes_no() {
-  # ask_yes_no VAR "Prompt" "Y"|"N"
   local var="$1" prompt="$2" default="${3:-Y}"
   local reply hint
   if [[ "${default^^}" == "Y" ]]; then hint="Y/n"; else hint="y/N"; fi
@@ -79,7 +97,7 @@ print_settings_summary() {
   echo "  Container settings"
   echo "----------------------------------------"
   echo "  CTID:              ${CTID}"
-  echo "  Hostname:          ${HOSTNAME}"
+  echo "  Hostname:          ${CT_HOSTNAME}"
   echo "  Storage:           ${STORAGE}"
   echo "  Template storage:  ${TEMPLATE_STORAGE}"
   echo "  Bridge:            ${BRIDGE}"
@@ -93,13 +111,13 @@ print_settings_summary() {
 }
 
 # Interactive Default / Advanced settings (community-scripts style).
-# Skip with NONINTERACTIVE=1 or when stdin is not a TTY (use env defaults).
+# Skip with NONINTERACTIVE=1. Do not use shell HOSTNAME — it is the PVE node name.
 gather_settings() {
-  local suggested
+  local suggested confirm mode
   suggested="$(next_free_ctid)"
 
   CTID="${CTID:-$suggested}"
-  HOSTNAME="${HOSTNAME:-app}"
+  CT_HOSTNAME="${CT_HOSTNAME:-app}"
   STORAGE="${STORAGE:-local-lvm}"
   TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
   BRIDGE="${BRIDGE:-vmbr0}"
@@ -112,18 +130,26 @@ gather_settings() {
   ONBOOT="${ONBOOT:-1}"
 
   if [[ "${NONINTERACTIVE:-0}" == "1" ]]; then
-    msg_info "NONINTERACTIVE=1 — using defaults (CTID=${CTID})"
+    if id_in_use "$CTID"; then
+      msg_error "ID ${CTID} already in use (LXC or VM). Set CTID= to a free ID."
+      exit 1
+    fi
+    msg_info "NONINTERACTIVE=1 — using CTID=${CTID} hostname=${CT_HOSTNAME}"
     return 0
   fi
 
+  # bash -c "$(curl ...)" keeps stdin as the TTY when run from a shell.
   if [[ ! -t 0 ]]; then
-    msg_info "No TTY — using defaults (CTID=${CTID}). Pass env vars or run interactively."
+    msg_info "No TTY — using defaults (CTID=${CTID}). Use Advanced via a real shell or set env vars."
+    if id_in_use "$CTID"; then
+      CTID="$(next_free_ctid)"
+      msg_info "ID was taken; using next free CTID=${CTID}"
+    fi
     return 0
   fi
 
-  local mode confirm
   echo "Install mode:"
-  echo "  1) Default   — next free CTID (${suggested}), DHCP, app defaults"
+  echo "  1) Default   — next free ID (${suggested}), DHCP, app defaults"
   echo "  2) Advanced  — choose CTID, storage, network, resources"
   echo
   ask_value mode "Select" "1"
@@ -139,14 +165,14 @@ gather_settings() {
           msg_error "CTID must be numeric."
           continue
         fi
-        if ctid_in_use "$CTID"; then
-          msg_error "CT ${CTID} already exists."
+        if id_in_use "$CTID"; then
+          msg_error "ID ${CTID} already in use (LXC or VM)."
           suggested="$(next_free_ctid)"
           continue
         fi
         break
       done
-      ask_value HOSTNAME "Hostname" "$HOSTNAME"
+      ask_value CT_HOSTNAME "Hostname" "$CT_HOSTNAME"
       ask_value STORAGE "Rootfs storage" "$STORAGE"
       ask_value TEMPLATE_STORAGE "Template storage" "$TEMPLATE_STORAGE"
       ask_value BRIDGE "Bridge" "$BRIDGE"
@@ -161,7 +187,6 @@ gather_settings() {
       ;;
     *)
       CTID="$suggested"
-      # Keep app-provided HOSTNAME/MEMORY/DISK/CORES; network defaults
       ;;
   esac
 
@@ -191,8 +216,8 @@ ensure_debian_template() {
 }
 
 create_debian_ct() {
-  if pct status "$CTID" >/dev/null 2>&1; then
-    msg_error "CT $CTID already exists. Pick another ID."
+  if id_in_use "$CTID"; then
+    msg_error "ID $CTID already in use (LXC or VM). Pick another ID."
     exit 1
   fi
 
@@ -206,7 +231,7 @@ create_debian_ct() {
   local swap="${SWAP}"
   local cores="${CORES}"
   local disk="${DISK}"
-  local hostname="${HOSTNAME}"
+  local hostname="${CT_HOSTNAME}"
   local unprivileged="${UNPRIVILEGED}"
   local onboot="${ONBOOT}"
   local ssh_key="${SSH_PUBKEY:-${HOME}/.ssh/authorized_keys}"

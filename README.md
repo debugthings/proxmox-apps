@@ -44,8 +44,8 @@ Env vars set defaults shown in the interactive prompts (or the full config when 
 
 | Variable | Default | Description |
 |---|---|---|
-| `CTID` | next free ID (≥100) | Container ID |
-| `HOSTNAME` | app name | LXC hostname |
+| `CTID` | next free ID (`pvesh /cluster/nextid`) | Container ID (skips existing CTs **and** VMs) |
+| `CT_HOSTNAME` | app name | LXC hostname (do not use `HOSTNAME` — that is the PVE node name) |
 | `STORAGE` | `local-lvm` | Rootfs storage |
 | `TEMPLATE_STORAGE` | `local` | Template storage |
 | `BRIDGE` | `vmbr0` | Network bridge |
